@@ -742,10 +742,35 @@ impl Execute for GyroflowPlugin {
 
             Load => {
 				self.gyroflow_plugin.initialize_log("openfx");
+                #[cfg(target_os = "windows")]
+                pin_module_in_memory();
                 OK
             },
 
             _ => REPLY_DEFAULT,
         }
+    }
+}
+
+/// Resolve unloads OFX plugins (FreeLibrary) during shutdown while gyroflow-core worker
+/// threads may still be blocked inside GPU driver calls. When such a call returns, it lands
+/// in the unmapped DLL and the host crashes (WER: "Gyroflow.ofx_unloaded", 0xC0000005, execute).
+/// Pinning keeps the module mapped until the process exits.
+#[cfg(target_os = "windows")]
+fn pin_module_in_memory() {
+    use std::ffi::c_void;
+    const GET_MODULE_HANDLE_EX_FLAG_PIN: u32 = 0x1;
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x4;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleExW(flags: u32, module_name: *const c_void, module: *mut *mut c_void) -> i32;
+    }
+
+    let mut module: *mut c_void = std::ptr::null_mut();
+    let address = pin_module_in_memory as fn() as *const c_void;
+    let ok = unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, address, &mut module) };
+    if ok == 0 {
+        log::warn!("Failed to pin the plugin module in memory");
     }
 }
